@@ -4,11 +4,16 @@ util.py: contains various utility functions used in the models
 
 from contextlib import contextmanager
 import os, sys
+from mpl_toolkits.mplot3d import Axes3D
 
 from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.decomposition import PCA
+from sklearn.manifold import spectral_embedding
 import numpy as np
 from scipy.stats import norm
 import sklearn.metrics
+from scipy import stats
 
 from keras import backend as K
 from keras.callbacks import Callback
@@ -17,6 +22,7 @@ import tensorflow as tf
 
 from core import costs as cf
 from munkres import Munkres
+import matplotlib.pyplot as plt
 
 def train_gen(pairs_train, dist_train, batch_size):
     '''
@@ -52,6 +58,8 @@ def make_layer_list(arch, network_type=None, reg=None, dropout=0):
     returns:        appropriately formatted stack_layers dictionary
     '''
     layers = []
+    if type(arch) == dict:
+        arch = arch[network_type]
     for i, a in enumerate(arch):
         layer = {'l2_reg': reg}
         layer.update(a)
@@ -198,7 +206,7 @@ def get_accuracy(cluster_assignments, y_true, n_clusters):
     # calculate the accuracy
     return np.mean(y_pred == y_true), confusion_matrix
 
-def print_accuracy(cluster_assignments, y_true, n_clusters, extra_identifier=''):
+def print_accuracy(cluster_assignments, y_true, n_clusters, params, nmi_score, extra_identifier=''):
     '''
     Convenience function: prints the accuracy
     '''
@@ -208,6 +216,10 @@ def print_accuracy(cluster_assignments, y_true, n_clusters, extra_identifier='')
     print('confusion matrix{}: '.format(extra_identifier))
     print(confusion_matrix)
     print('spectralNet{} accuracy: '.format(extra_identifier) + str(np.round(accuracy, 3)))
+    with open(os.path.join(params['results_path'], 'NMI_acc_report.txt'), 'w') as f:
+        print("spectralNet accuracy: ".format(np.round(accuracy, 3)), file=f)
+        print("spectralNet NMI: {}".format(str(np.round(nmi_score, 3))), file=f)
+
 
 def get_cluster_sols(x, cluster_obj=None, ClusterClass=None, n_clusters=None, init_args={}):
     '''
@@ -305,4 +317,97 @@ def spectral_clustering(x, scale, n_nbrs=None, affinity='full', W=None):
     L = D - W
     Lambda, V = np.linalg.eigh(L)
     return(Lambda, V)
+
+def run_and_save_embedding(epoch_num, embedded_data, labels, params, loss=None, val_loss=None, mode='Spectral Net'):
+    fn = os.path.join(params.get('results_path'), 'Embeddings')
+    if not os.path.exists(fn):
+        os.makedirs(fn)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    colors = ['r', 'g', 'b']
+    for i, label in enumerate(np.unique(labels)):
+        cur_data = embedded_data[labels == label, :]
+        # Randomly show 100 points from each label, else plot is too crowded
+        indices = np.random.randint(cur_data.shape[0], size=100)
+
+        # using PCA for showing data in 3D
+        pca = PCA(n_components=3)
+        x_new = pca.fit_transform(cur_data[indices])
+        ax.scatter(cur_data[indices, 0], cur_data[indices, 1], cur_data[indices, 2], c=colors[i])
+
+
+    plt.title(mode + ' embedding (3 first dimensions) - Epoch ' + str(epoch_num))
+    plt.savefig(os.path.join(fn, mode + ' embedding - Epoch ' + str(epoch_num)))
+    if mode == 'Spectral Net':
+        plt.figure()
+        plt.plot(range(len(loss)), loss)
+        plt.savefig(os.path.join(fn, 'Loss.png'))
+
+        plt.figure()
+        plt.plot(range(len(val_loss)), val_loss)
+        plt.savefig(os.path.join(fn, 'Validation loss.png'))
+
+    plt.close('all')
+
+def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5):
+    '''
+    Saves FFT plots of window_size, non-averaged examples and averaged examples
+    :param data: 2D array, [N_samples, N_channels]
+    :param window_size: window size
+    :return: None
+    '''
+    if not (np.log2(window_size) % 1) == 0:
+        print('window size %d is not a power of 2, rounding to nearest power' % window_size)
+        window_size = int(2 ** np.round(np.log2(window_size)))
+
+    start_diff = int(window_size - window_size * overlap)
+    dshape = data.shape
+    N_windows = dshape[0] // window_size
+    pad = N_windows % window_size
+    data = np.pad(data, ((0, pad), (0, 0)), 'constant')
+    data_fft = []
+    avg_label = []
+    for i in range(N_windows):
+        window =data[i * start_diff:i * start_diff + window_size, :]
+        fft = np.fft.fft(window, axis=1)
+        fft_centered = np.fft.fft(window - np.mean(window, axis=0))
+        data_fft.append(fft)
+        label = np.argmax(np.bincount(np.asarray(labels[i * start_diff:i * start_diff + window_size]).astype('int')))
+        avg_label.append(label)
+
+
+    # after FFT calculated, randomly select from each label and plot & save
+    data_fft = np.asarray(data_fft)
+    avg_label = np.asarray(avg_label)
+    channels = np.random.randint(59, size=10)
+    for label in np.unique(labels):
+        label_data = data_fft[avg_label == label]
+        example_i = label_data[np.random.randint(label_data.shape[0])]
+        plt.figure()
+        plt.plot(np.arange(0, 100, 100 / 256), 20 * np.log10(2 * np.abs(example_i[:, channels]) / 256))
+        plt.title('FFT of 10 channels - example label ' + str(int(label)))
+        plt.xlabel('Frequency [Hz]')
+        plt.ylabel('Amplitude [dB]')
+        fn = os.path.join(params.get('results_path'), 'examples')
+        if not os.path.exists(fn):
+            os.makedirs(fn)
+        plt.savefig(os.path.join(fn, 'fft_example_label_' + str(int(label)) + '.png'))
+
+
+    # Averaged FFT for each state
+    for label in np.unique(labels):
+        avg_per_label = np.mean(data_fft[avg_label == label], axis=0)
+        plt.figure()
+        plt.plot(np.arange(0, 100, 100 / 256), 20 * np.log10(2 * np.abs(avg_per_label[:, channels]) / 256))
+        plt.title('FFT of 10 channels - average of label ' + str(int(label)))
+        plt.xlabel('Frequency [Hz]')
+        plt.ylabel('Amplitude [dB]')
+        plt.savefig(os.path.join(fn, 'fft_average_label_' + str(int(label)) + '.png'))
+
+    plt.close('all')
+
+
+
+
 

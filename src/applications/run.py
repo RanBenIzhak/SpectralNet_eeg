@@ -112,7 +112,13 @@ elif args.dset == 'cc':
         # training parameters
         'n_clusters': 2,
         'use_code_space': False,
-        'affinity': 'full',
+        'affinity': 'siamese',
+        'siam_ne': 10,
+        'siam_lr': 1e-3,
+        'siam_patience': 1,
+        'siam_reg': 1e-2,
+        'siam_drop': 0.1,
+
         'n_nbrs': 2,
         'scale_nbr': 2,
         'spec_ne': 300,
@@ -122,14 +128,25 @@ elif args.dset == 'cc':
         'batch_size': 128,
         'batch_size_orthonorm': 128,
         'spec_reg': None,
-        'arch': [
-            {'type': 'softplus', 'size': 50},
-            {'type': 'BatchNormalization'},
-            {'type': 'softplus', 'size': 50},
-            {'type': 'BatchNormalization'},
-            {'type': 'softplus', 'size': 50},
-            {'type': 'BatchNormalization'},
+        'siamese_tot_pairs': 100000,
+        'siam_k': 50,
+        'arch': {'siamese':
+                [
+                {'type': 'relu', 'size': 1024},
+                {'type': 'relu', 'size': 1024},
+                {'type': 'relu', 'size': 512},
+                {'type': 'relu', 'size': 10},
+             ],
+                 'spectral':
+                [
+                {'type': 'softplus', 'size': 50},
+                {'type': 'BatchNormalization'},
+                {'type': 'softplus', 'size': 50},
+                {'type': 'BatchNormalization'},
+                {'type': 'softplus', 'size': 50},
+                {'type': 'BatchNormalization'},
             ],
+        },
         'use_all_data': True,
         }
     params.update(cc_params)

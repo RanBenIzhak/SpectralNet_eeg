@@ -4,15 +4,21 @@ data.py: contains all data generating code for datasets used in the script
 
 import os, sys
 import h5py
+import pickle
 
 import numpy as np
+import core.util as util
 from sklearn import preprocessing
+from scipy.signal import welch
 
 from keras import backend as K
 from keras.datasets import mnist
 from keras.models import model_from_json
-
+from core.takens_embed import get_delayed_manifold as takens
 from core import pairs
+
+
+
 
 def get_data(params, data=None):
     '''
@@ -36,6 +42,18 @@ def get_data(params, data=None):
         'val_unlabeled_and_labeled'     - (pairs_val_unlabeled, dist_val_unlabeled, pairs_val_labeled, dist_val_labeled)
     '''
     ret = {}
+
+    # preprocessed data
+    data_path = os.path.join(os.path.dirname(sys.argv[0]), 'data', params['dset'] + '_preprocessed')
+    if not os.path.exists(data_path):
+        os.makedirs(data_path)
+    data_file = os.path.join(data_path, params['exp_num'] + '_' + params['preprocess'] + '_preprocessed.pickle')
+
+    # if already calculated preprocess - since it takes long
+    if os.path.exists(data_file):
+        with open(data_file, 'rb') as handle:
+            ret = pickle.load(handle)
+        return ret
 
     # get data if not provided
     if data is None:
@@ -129,7 +147,9 @@ def get_data(params, data=None):
             precomputed_knn_path=train_path,
             use_approx=params.get('use_approx', False),
             pre_shuffled=True,
+            verbose=True
         )
+
         pairs_val_unlabeled, dist_val_unlabeled = pairs.create_pairs_from_unlabeled_data(
             x1=x_val_unlabeled,
             p=p_val_unlabeled,
@@ -145,7 +165,6 @@ def get_data(params, data=None):
         pairs_train_labeled, dist_train_labeled = pairs.create_pairs_from_labeled_data(x_train_labeled, class_indices)
         class_indices = [np.where(y_train_labeled == i)[0] for i in range(params['n_clusters'])]
         pairs_val_labeled, dist_val_labeled = pairs.create_pairs_from_labeled_data(x_train_labeled, class_indices)
-
         ret['siamese']['train_unlabeled_and_labeled'] = (pairs_train_unlabeled, dist_train_unlabeled, pairs_train_labeled, dist_train_labeled)
         ret['siamese']['val_unlabeled_and_labeled'] = (pairs_val_unlabeled, dist_val_unlabeled, pairs_val_labeled, dist_val_labeled)
 
@@ -154,8 +173,10 @@ def get_data(params, data=None):
         dist_train = np.concatenate((dist_train_unlabeled, dist_train_labeled), axis=0)
         pairs_val = np.concatenate((pairs_val_unlabeled, pairs_val_labeled), axis=0)
         dist_val = np.concatenate((dist_val_unlabeled, dist_val_labeled), axis=0)
-
         ret['siamese']['train_and_test'] = (pairs_train, dist_train, pairs_val, dist_val)
+
+        with open(data_file, 'wb') as handle:
+            pickle.dump(ret, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     return ret
 
@@ -175,6 +196,9 @@ def load_data(params):
         x_train, x_test, y_train, y_test = get_mnist()
     elif params['dset'] == 'cc':
         x_train, x_test, y_train, y_test = generate_cc(params.get('n'), params.get('noise_sig'), params.get('train_set_fraction'))
+        x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
+    elif params['dset'] == 'bci_iv_1':
+        x_train, x_test, y_train, y_test = get_bci_iv_1(params.get('exp_num'), params)
         x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
     else:
         raise ValueError('Dataset provided ({}) is invalid!'.format(params['dset']))
@@ -333,6 +357,62 @@ def get_mnist():
     x_test = np.expand_dims(x_test, -1) / 255
     return x_train, x_test, y_train, y_test
 
+def get_bci_iv_1(exp_num, params):
+    # ==== paths filenames ==== #
+    dp = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../data/BCI_IV_1')
+    x_file = os.path.join(dp, 'BCICIV_calib_' + exp_num + '_cnt.txt')
+    y_file = os.path.join(dp, 'BCICIV_calib_' + exp_num + '_mrk.txt')
+
+    # ==== loading in base format ==== #
+
+    if not os.path.exists(x_file):
+        raise()
+    with open(x_file, 'r') as f:
+        x = np.asarray([[int(z) for z in y.split('\t')] for y in f.readlines()])
+    with open(y_file, 'r') as f:
+        y = np.asarray([[int(float(z)) for z in x.split('\t')] for x in f.readlines()])
+
+
+    x = x[y[0,0]:]
+    # for data integrity, splitting at the start of each visual cue session - it matters where we cut!
+    y_vec = vectorize_bci_labels(y, x.shape[0])
+    # changing -1 in y array to 2, since algorithm demands classes to be natural numbers
+    y_vec[y_vec == -1] = 2
+
+    slice_ind = y[int(len(y) * 0.8), 0]
+
+    # since x is uint64, with numbers between -32000 to 16000 we normalize it (stability for siamese net issue?
+    x = x / np.max([np.abs(np.min(x)), np.abs(np.max(x))])
+
+    util.run_and_save_fft_examples(x, y_vec, params)
+
+    # PREPROCESSING X
+    if params['preprocess']:
+        x_processed = eeg_preprocess(x, params.get('preprocess'))
+
+    x_train, x_test = x_processed[:slice_ind], x_processed[slice_ind:]
+    y_train, y_test = y_vec[:slice_ind], y_vec[slice_ind:x_processed.shape[0]]
+
+    return x_train, x_test, y_train, y_test
+
+def vectorize_bci_labels(y, x_length):
+    '''
+    change indexed labels to [-1, 0, 1] labels in the original length of x
+    :param y:
+    :return:
+    '''
+    y_vec = []
+    for i in range(y.shape[0] - 1):
+        y_vec = np.concatenate((y_vec, np.multiply(np.ones(400), y[i, 1])))
+        y_vec = np.concatenate((y_vec, np.zeros(y[i+1, 0] - y[i, 0] - 400)))
+    # add last action task
+    y_vec = np.concatenate((y_vec, np.multiply(np.ones(400), y[-1, 1])))
+    # pad with 0's to X data length
+    y_vec = np.concatenate((y_vec, np.zeros(x_length - len(y_vec))))
+    return y_vec
+
+
+
 def pre_process(x_train, x_test, standardize):
     '''
     Convenience function: uses the sklearn StandardScaler on x_train
@@ -349,4 +429,16 @@ def pre_process(x_train, x_test, standardize):
             preprocessor = preprocessing.StandardScaler().fit(x_test)
             x_test = preprocessor.transform(x_test)
     return x_train, x_test
+
+
+
+def eeg_preprocess(data, method):
+    if method == 'takens':
+        data_processed = takens(data, tau=10, ndelay=7)
+        data_processed = np.transpose(data_processed, (1, 0, 2))
+        data_processed = data_processed.reshape((data_processed.shape[0], -1))
+    if method =='welch':
+        f_sample_points, data_processed = welch(data, fs=100)
+
+    return data_processed
 

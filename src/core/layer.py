@@ -7,7 +7,7 @@ import tensorflow as tf
 import numpy as np
 from keras.regularizers import l2
 
-def orthonorm_op(x, epsilon=1e-7):
+def orthonorm_op(x, epsilon=5e-6):
     '''
     Computes a matrix that orthogonalizes the input matrix x
 
@@ -19,6 +19,8 @@ def orthonorm_op(x, epsilon=1e-7):
     '''
     x_2 = K.dot(K.transpose(x), x)
     x_2 += K.eye(K.int_shape(x)[1])*epsilon
+    tf.summary.scalar('x_2_11', x_2[0,0])
+    tf.summary.histogram('x_2_matrix', x_2)
     L = tf.cholesky(x_2)
     ortho_weights = tf.transpose(tf.matrix_inverse(L)) * tf.sqrt(tf.cast(tf.shape(x)[0], dtype=K.floatx()))
     return ortho_weights
@@ -38,12 +40,13 @@ def Orthonorm(x, name=None):
     # compute orthogonalizing matrix
     ortho_weights = orthonorm_op(x)
     # create variable that holds this matrix
-    ortho_weights_store = K.variable(np.zeros((d,d)))
+    ortho_weights_store = K.variable(np.zeros((d,d)), name='ortho_weights')
     # create op that saves matrix into variable
+    # TEST because of some unwanted results in orthogonal layer (throwing all to 0'z)
     ortho_weights_update = tf.assign(ortho_weights_store, ortho_weights, name='ortho_weights_update')
+    tf.summary.histogram("orthonorm_weights", ortho_weights_store)
     # switch between stored and calculated weights based on training or validation
     l = Lambda(lambda x: K.in_train_phase(K.dot(x, ortho_weights), K.dot(x, ortho_weights_store)), name=name)
-
     l.add_update(ortho_weights_update)
     return l
 

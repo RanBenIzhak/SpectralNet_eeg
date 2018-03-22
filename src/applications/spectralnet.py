@@ -4,6 +4,8 @@ spectralnet.py: contains run function for spectralnet
 import sys, os, pickle
 import tensorflow as tf
 import numpy as np
+import h5py
+import matplotlib.pyplot as plt
 import traceback
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
 
@@ -19,7 +21,7 @@ from keras.optimizers import RMSprop
 from core import train
 from core import costs
 from core.layer import stack_layers
-from core.util import get_scale, print_accuracy, get_cluster_sols, LearningHandler, make_layer_list, train_gen, get_y_preds
+from core.util import get_scale, print_accuracy, get_cluster_sols, LearningHandler, make_layer_list, train_gen, get_y_preds, run_and_save_embedding
 
 def run_net(data, params):
     #
@@ -58,9 +60,9 @@ def run_net(data, params):
 
     # spectralnet has three inputs -- they are defined here
     inputs = {
-            'Unlabeled': Input(shape=input_shape,name='UnlabeledInput'),
-            'Labeled': Input(shape=input_shape,name='LabeledInput'),
-            'Orthonorm': Input(shape=input_shape,name='OrthonormInput'),
+            'Unlabeled': Input(shape=input_shape, name='UnlabeledInput'),
+            'Labeled': Input(shape=input_shape, name='LabeledInput'),
+            'Orthonorm': Input(shape=input_shape, name='OrthonormInput'),
             }
 
     #
@@ -92,6 +94,7 @@ def run_net(data, params):
     #
     # TRAIN SIAMESE NET
     #
+        siamese_path = os.path.join(params['results_path'], 'Siamese_net.h5')
 
         # compile the siamese network
         siamese_net_distance.compile(loss=costs.contrastive_loss, optimizer=RMSprop())
@@ -111,12 +114,24 @@ def run_net(data, params):
 
         # compute the steps per epoch
         steps_per_epoch = int(len(pairs_train) / params['siam_batch_size'])
+        if os.path.exists(siamese_path): # and not params['retrain']:
+            siamese_net_distance.load_weights(siamese_path)
+            hist = siamese_net_distance.fit_generator(train_gen_, epochs=0,
+                                                      validation_data=validation_data, steps_per_epoch=steps_per_epoch,
+                                                      callbacks=[siam_lh])
+        else:
+            # train the network
+            hist = siamese_net_distance.fit_generator(train_gen_, epochs=params['siam_ne'], validation_data=validation_data, steps_per_epoch=steps_per_epoch, callbacks=[siam_lh])
 
-        # train the network
-        hist = siamese_net_distance.fit_generator(train_gen_, epochs=params['siam_ne'], validation_data=validation_data, steps_per_epoch=steps_per_epoch, callbacks=[siam_lh])
+            siamese_net_distance.save_weights(os.path.join(params['results_path'], 'Siamese_net.h5'))
 
         # compute the siamese embeddings of the input data
         all_siam_preds = train.predict(siamese_outputs['A'], x_unlabeled=x_train, inputs=inputs, y_true=y_true, batch_sizes=batch_sizes)
+
+        # saving some results of the embedding of Siamese net
+        # run_and_save_embedding(params.get('siam_ne'), all_siam_preds, y_train, params, loss=None, val_loss=None, mode='Siamese Net')
+
+
 
     #
     # DEFINE SPECTRALNET
@@ -124,17 +139,18 @@ def run_net(data, params):
 
     # generate layers
     layers = []
-    layers = make_layer_list(params['arch'][:-1], 'spectral', params.get('spec_reg'))
+    layers = make_layer_list(params['arch'], 'spectral', params.get('spec_reg'))
     layers += [
               {'type': 'tanh',
-               'size': params['n_clusters'],
+               'size': 10, # params['n_clusters'],
                'l2_reg': params.get('spec_reg'),
-               'name': 'spectral_{}'.format(len(params['arch'])-1)},
+               'name': 'spectral_{}'.format(len(params['arch']))},
               {'type': 'Orthonorm', 'name':'orthonorm'}
               ]
 
     # create spectralnet
     outputs = stack_layers(inputs, layers)
+    summaries = tf.summary.merge_all()
     spectral_net = Model(inputs=inputs['Unlabeled'], outputs=outputs['Unlabeled'])
 
     #
@@ -182,6 +198,8 @@ def run_net(data, params):
     learning_rate = tf.Variable(0., name='spectral_net_learning_rate')
     train_step = tf.train.RMSPropOptimizer(learning_rate=learning_rate).minimize(spectral_net_loss, var_list=spectral_net.trainable_weights)
 
+    # create TB writer
+    writer = tf.summary.FileWriter(params['logs_path'], graph=tf.get_default_graph())
     #
     # TRAIN SPECTRALNET
     #
@@ -201,38 +219,78 @@ def run_net(data, params):
 
     # begin spectralnet training loop
     spec_lh.on_train_begin()
-    for i in range(params['spec_ne']):
-        # train spectralnet
-        loss = train.train_step(
-                return_var=[spectral_net_loss],
-                updates=spectral_net.updates + [train_step],
-                x_unlabeled=x_train_unlabeled,
-                inputs=inputs,
-                y_true=y_true,
-                batch_sizes=batch_sizes,
-                x_labeled=x_train_labeled,
-                y_labeled=y_train_labeled_onehot,
-                batches_per_epoch=100)[0]
+    weights_path = os.path.join(params['results_path'], 'spectral_net_weights.h5')
+    if not os.path.exists(weights_path) or params['retrain']:
+        loss_list, val_loss_list = [], []
+        for i in range(params['spec_ne']):
+            # train spectralnet
+            loss = train.train_step(
+                    return_var=[spectral_net_loss, outputs['Unlabeled']],
+                    updates=spectral_net.updates + [train_step, summaries],
+                    x_unlabeled=x_train_unlabeled,
+                    inputs=inputs,
+                    y_true=y_true,
+                    batch_sizes=batch_sizes,
+                    x_labeled=x_train_labeled,
+                    y_labeled=y_train_labeled_onehot,
+                    batches_per_epoch=100)[0]
 
-        # get validation loss
-        val_loss = train.predict_sum(
-                spectral_net_loss,
-                x_unlabeled=x_val_unlabeled,
-                inputs=inputs,
+            # get validation loss
+            val_loss = train.predict_sum(
+                    spectral_net_loss,
+                    x_unlabeled=x_val_unlabeled,
+                    inputs=inputs,
+                    y_true=y_true,
+                    x_labeled=x[0:0],
+                    y_labeled=y_train_labeled_onehot,
+                    batch_sizes=batch_sizes)
+
+            # do early stopping if necessary
+            if spec_lh.on_epoch_end(i, val_loss):
+                print('STOPPING EARLY')
+                break
+
+            # print training status
+            print("Epoch: {}, loss={:2f}, val_loss={:2f}".format(i, loss, val_loss))
+            if val_loss < 10:
+                # debug the drop in the loss - ~250 to 0.5 on validation!
+                new_x_spectral_net = train.predict(
+                    outputs['Unlabeled'],
+                    x_unlabeled=x,
+                    inputs=inputs_test,
+                    y_true=y_true,
+                    x_labeled=x_train_labeled[0:0],
+                    y_labeled=y_train_labeled_onehot[0:0],
+                    batch_sizes=batch_sizes)
+
+
+            cur_x_spectralnet = train.predict(
+                outputs['Unlabeled'],
+                x_unlabeled=x,
+                inputs=inputs_test,
                 y_true=y_true,
-                x_labeled=x[0:0],
-                y_labeled=y_train_labeled_onehot,
+                x_labeled=x_train_labeled[0:0],
+                y_labeled=y_train_labeled_onehot[0:0],
                 batch_sizes=batch_sizes)
 
-        # do early stopping if necessary
-        if spec_lh.on_epoch_end(i, val_loss):
-            print('STOPPING EARLY')
-            break
+            loss_list.append(loss)
+            val_loss_list.append(val_loss)
 
-        # print training status
-        print("Epoch: {}, loss={:2f}, val_loss={:2f}".format(i, loss, val_loss))
+            kmeans_assignments, km = get_cluster_sols(cur_x_spectralnet, ClusterClass=KMeans,
+                                                      n_clusters=params['n_clusters'], init_args={'n_init': 10})
+            y_spectralnet, _ = get_y_preds(kmeans_assignments, y, params['n_clusters'])
+            # print_accuracy(kmeans_assignments, y, params['n_clusters'])
+            from sklearn.metrics import normalized_mutual_info_score as nmi
+            nmi_score = nmi(kmeans_assignments, y)
+            print_accuracy(kmeans_assignments, y, params['n_clusters'], params, nmi_score)
+            print('NMI: ' + str(np.round(nmi_score, 3)))
 
-    print("finished training")
+            # run_and_save_embedding(i, cur_x_spectralnet, y, params, loss_list, val_loss_list)
+
+        spectral_net.save_weights(weights_path)
+        print("finished training")
+    else:
+        spectral_net.load_weights(weights_path)
 
     #
     # EVALUATE
@@ -251,12 +309,13 @@ def run_net(data, params):
     # get accuracy and nmi
     kmeans_assignments, km = get_cluster_sols(x_spectralnet, ClusterClass=KMeans, n_clusters=params['n_clusters'], init_args={'n_init':10})
     y_spectralnet, _ = get_y_preds(kmeans_assignments, y, params['n_clusters'])
-    print_accuracy(kmeans_assignments, y, params['n_clusters'])
+    # print_accuracy(kmeans_assignments, y, params['n_clusters'])
     from sklearn.metrics import normalized_mutual_info_score as nmi
     nmi_score = nmi(kmeans_assignments, y)
+    print_accuracy(kmeans_assignments, y, params['n_clusters'], params, nmi_score)
     print('NMI: ' + str(np.round(nmi_score, 3)))
 
-    if params['generalization_metrics']:
+    if params.get('generalization_metrics'):
         x_spectralnet_train = train.predict(
                 outputs['Unlabeled'],
                 x_unlabeled=x_train_unlabeled,
@@ -277,9 +336,11 @@ def run_net(data, params):
         from scipy.spatial.distance import cdist
         dist_mat = cdist(x_spectralnet_test, km_train.cluster_centers_)
         closest_cluster = np.argmin(dist_mat, axis=1)
-        print_accuracy(closest_cluster, y_test, params['n_clusters'], ' generalization')
         nmi_score = nmi(closest_cluster, y_test)
+        print_accuracy(closest_cluster, y_test, params['n_clusters'], params, nmi_score, ' generalization')
+
         print('generalization NMI: ' + str(np.round(nmi_score, 3)))
+
 
     return x_spectralnet, y_spectralnet
 

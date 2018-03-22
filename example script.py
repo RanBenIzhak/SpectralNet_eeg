@@ -1,49 +1,75 @@
 import sys, os
 
 # add directories in src/ to path
-sys.path.insert(0, 'path_to_spectralnet/src/')
+sys.path.insert(0, '/home/user/PycharmProjects/SpectralNet_eeg/src/')
 
 # import run_net and get_data
-from spectralnet import run_net
+from src.applications.spectralnet import run_net
 from src.core.data import get_data
 
 # define hyperparameters
 params = {
-    'dset': 'new_dataset',
-    'val_set_fraction': ...,
-    'siam_batch_size': ...,
-    'n_clusters': ...,
-    'affinity': ...,
-    'n_nbrs': ...,
-    'scale_nbrs': ...,
-    'siam_k': ...,
-    'siam_ne': ...,
-    'spec_ne': ...,
-    'siam_lr': ...,
-    'spec_lr': ...,
-    'siam_patience': ...,
-    'spec_patience': ...,
-    'siam_drop': ...,
-    'spec_drop': ...,
-    'batch_size': ...,
-    'siam_reg': ...,
-    'spec_reg': ...,
-    'siam_n': ...,
-    'siamese_tot_pairs': ...,
+    'exp_name': 'takens_embed',             # For naming output folders and tracking results
+    'preprocess': 'takens',                     # Takens, Welch, None
+    'collect_data_samples': True,               # weather to save some plots of the original data
+    'dset': 'bci_iv_1',
+    'exp_num': 'ds1b',
+    'retrain': True,                   # To add in code - ignore pre-trained weights and re-train the network
+    'val_set_fraction': 0.1,
+    'siam_batch_size': 128,
+    'n_clusters': 3,
+    'affinity': 'siamese',
+    'train_labeled_fraction': 0.5,
+    'val_labeled_fraction': 0.5,
+    'n_nbrs': 10,
+    'scale_nbrs': 2,
+    'scale_nbr': 2,
+    'siam_k': 3,
+    'siam_ne': 75,               # For Debug, change to higher number (~100) when running
+    'spec_ne': 20,              # For Debug, change to higher number (~100) when running
+    'siam_lr': 1e-3,
+    'spec_lr': 1e-4,
+    'siam_patience': 5,
+    'spec_patience': 10,
+    'siam_drop': 0.3,
+    'spec_drop': 0.3,
+    'batch_size': 512,
+    'batch_size_orthonorm': 256,
+    'siam_reg': None,
+    'spec_reg': None,
+    'siam_n': None,
+    'siamese_tot_pairs': 100000,
     'arch': [
-        {'type': 'relu', 'size': ...},
-        {'type': 'relu', 'size': ...},
-        {'type': 'relu', 'size': ...},
+        {'type': 'relu', 'size': 1024},
+        {'type': 'relu', 'size': 1024},
+        {'type': 'relu', 'size': 512},
+        {'type': 'relu', 'size': 20},
     ],
-    'use_approx': ...,
+    'use_approx': False,
+    'use_all_data': False,
 }
+# updating params according to other params
+data_path = os.path.join(os.path.dirname(sys.argv[0]), 'data', params['dset'] + '_preprocessed')
+results_path = os.path.join(os.path.dirname(sys.argv[0]), 'Results', params['exp_name'] + '_' + params['exp_num'])
+logs_path = os.path.join(os.path.dirname(sys.argv[0]), 'Logs', params['exp_name'] + '_' + params['exp_num'])
+params.update({'dpath' : data_path,
+               'results_path': results_path,
+               'logs_path': logs_path})
 
-# load dataset
-x_train, x_test, y_train, y_test = load_new_dataset_data()
-new_dataset_data = (x_train, x_test, y_train, y_test)
+if not os.path.exists(results_path):
+    os.makedirs(results_path)
+if not os.path.exists(data_path):
+    os.makedirs(data_path)
 
-# preprocess dataset
-data = get_data(params, new_dataset_data)
+
+
+# load & preprocess dataset
+data = get_data(params)
+# new_dataset_data = (x_train, x_test, y_train, y_test)
+#
+# # preprocess dataset
+# data = get_data(params, new_dataset_data)
 
 # run spectral net
 x_spectralnet, y_spectralnet = run_net(data, params)
+print('stop')
