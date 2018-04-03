@@ -93,7 +93,7 @@ def train_step(return_var, updates, x_unlabeled, inputs, y_true,
         # try:
         loss_val, x_embed, orth_weight,_,_ =K.get_session().run(all_vars, feed_dict=feed_dict)
         num_small += (np.asarray(
-            [(np.matmul(np.transpose(x_embed), x_embed)[i, i] / 512) for i in range(10)]
+            [(np.matmul(np.transpose(x_embed), x_embed)[i, i] / 512) for i in range(x_embed.shape[1])]
             ) < 1e-3).sum()
         return_vars_ += loss_val
         # except:

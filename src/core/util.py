@@ -217,9 +217,10 @@ def print_accuracy(cluster_assignments, y_true, n_clusters, params, nmi_score, e
     print(confusion_matrix)
     print('spectralNet{} accuracy: '.format(extra_identifier) + str(np.round(accuracy, 3)))
     with open(os.path.join(params['results_path'], 'NMI_acc_report.txt'), 'w') as f:
-        print("spectralNet accuracy: ".format(np.round(accuracy, 3)), file=f)
+        print("spectralNet accuracy: {}".format(np.round(accuracy, 3)), file=f)
         print("spectralNet NMI: {}".format(str(np.round(nmi_score, 3))), file=f)
 
+    return accuracy, nmi_score
 
 def get_cluster_sols(x, cluster_obj=None, ClusterClass=None, n_clusters=None, init_args={}):
     '''
@@ -318,7 +319,7 @@ def spectral_clustering(x, scale, n_nbrs=None, affinity='full', W=None):
     Lambda, V = np.linalg.eigh(L)
     return(Lambda, V)
 
-def run_and_save_embedding(epoch_num, embedded_data, labels, params, loss=None, val_loss=None, mode='Spectral Net'):
+def run_and_save_embedding(epoch_num, embedded_data, labels, acc_array, params, loss=None, val_loss=None, mode='Spectral Net'):
     fn = os.path.join(params.get('results_path'), 'Embeddings')
     if not os.path.exists(fn):
         os.makedirs(fn)
@@ -348,6 +349,10 @@ def run_and_save_embedding(epoch_num, embedded_data, labels, params, loss=None, 
         plt.plot(range(len(val_loss)), val_loss)
         plt.savefig(os.path.join(fn, 'Validation loss.png'))
 
+        plt.figure()
+        plt.plot(range(len(acc_array)), acc_array)
+        plt.savefig(os.path.join(fn, 'Accuracy.png'))
+
     plt.close('all')
 
 def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5):
@@ -372,8 +377,11 @@ def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5
         window =data[i * start_diff:i * start_diff + window_size, :]
         fft = np.fft.fft(window, axis=1)
         fft_centered = np.fft.fft(window - np.mean(window, axis=0))
+        label_array = np.asarray(labels[i * start_diff:i * start_diff + window_size])
+        if not np.argwhere(np.isnan(label_array)).shape[0] == 0:
+            continue
         data_fft.append(fft)
-        label = np.argmax(np.bincount(np.asarray(labels[i * start_diff:i * start_diff + window_size]).astype('int')))
+        label = np.argmax(np.bincount(label_array.astype('int')))
         avg_label.append(label)
 
 
@@ -381,7 +389,7 @@ def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5
     data_fft = np.asarray(data_fft)
     avg_label = np.asarray(avg_label)
     channels = np.random.randint(59, size=10)
-    for label in np.unique(labels):
+    for label in np.unique(avg_label):
         label_data = data_fft[avg_label == label]
         example_i = label_data[np.random.randint(label_data.shape[0])]
         plt.figure()
@@ -396,7 +404,7 @@ def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5
 
 
     # Averaged FFT for each state
-    for label in np.unique(labels):
+    for label in np.unique(avg_label):
         avg_per_label = np.mean(data_fft[avg_label == label], axis=0)
         plt.figure()
         plt.plot(np.arange(0, 100, 100 / 256), 20 * np.log10(2 * np.abs(avg_per_label[:, channels]) / 256))
@@ -409,5 +417,10 @@ def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5
 
 
 
-
+def replace_nan(y):
+    nan_indices = np.argwhere(np.isnan(y))
+    valid_indices = np.argwhere(np.isnan(y) == False)
+    NaN_label = np.max(y[valid_indices]) + 1.0
+    y[nan_indices] = NaN_label
+    return y
 

@@ -43,7 +43,7 @@ def Orthonorm(x, name=None):
     ortho_weights_store = K.variable(np.zeros((d,d)), name='ortho_weights')
     # create op that saves matrix into variable
     # TEST because of some unwanted results in orthogonal layer (throwing all to 0'z)
-    ortho_weights_update = tf.assign(ortho_weights_store, ortho_weights, name='ortho_weights_update')
+    ortho_weights_update = tf.assign(ortho_weights_store, ortho_weights, use_locking=True, name='ortho_weights_update')
     tf.summary.histogram("orthonorm_weights", ortho_weights_store)
     # switch between stored and calculated weights based on training or validation
     l = Lambda(lambda x: K.in_train_phase(K.dot(x, ortho_weights), K.dot(x, ortho_weights_store)), name=name)

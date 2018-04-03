@@ -47,13 +47,34 @@ def get_data(params, data=None):
     data_path = os.path.join(os.path.dirname(sys.argv[0]), 'data', params['dset'] + '_preprocessed')
     if not os.path.exists(data_path):
         os.makedirs(data_path)
-    data_file = os.path.join(data_path, params['exp_num'] + '_' + params['preprocess'] + '_preprocessed.pickle')
+    data_file = os.path.join(data_path,params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
+                             '_preprocessed.pickle')
+    data_file_spectral = os.path.join(data_path, params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
+                             '_spectral_preprocessed.pickle')
+    data_file_rest = os.path.join(data_path, params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
+                                      '_rest_preprocessed.pickle')
 
     # if already calculated preprocess - since it takes long
-    if os.path.exists(data_file):
+    # if os.path.exists(data_file):
+    try:
         with open(data_file, 'rb') as handle:
             ret = pickle.load(handle)
+        print("Loaded pickle file")
         return ret
+    except:
+        print("Did not load general pickle file")
+    try:
+        with open(data_file_spectral, 'rb') as handle:
+            ret_spectral = pickle.load(handle)
+        with open(data_file_rest, 'rb') as handle:
+            ret_rest = pickle.load(handle)
+        ret = ret_rest
+        ret['spectral'] = ret_spectral
+        return ret
+    except:
+        ("Failed loading splitted pickle files")
+
+
 
     # get data if not provided
     if data is None:
@@ -175,8 +196,25 @@ def get_data(params, data=None):
         dist_val = np.concatenate((dist_val_unlabeled, dist_val_labeled), axis=0)
         ret['siamese']['train_and_test'] = (pairs_train, dist_train, pairs_val, dist_val)
 
-        with open(data_file, 'wb') as handle:
-            pickle.dump(ret, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        try:
+            with open(data_file, 'wb') as handle:
+                pickle.dump(ret, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            print("finished saving data to pickle file \n")
+            return ret
+        except MemoryError:
+            os.remove(data_file)
+            print("Memory error - did not save training pairs for siamese network")
+            print("might result in long run-times if re-running program")
+        try:
+            with open(data_file_spectral, 'wb') as handle:
+                pickle.dump(ret['spectral'], handle, protocol=pickle.HIGHEST_PROTOCOL)
+            ret_rest = {x: ret[x] for x in ret if x not in ["spectral"]}
+            with open(data_file_rest, 'wb') as handle:
+                pickle.dump(ret_rest, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        except:
+            os.remove(data_file_spectral)
+            os.remove(data_file_rest)
+            print("failed saving any pickle")
 
     return ret
 
@@ -198,7 +236,7 @@ def load_data(params):
         x_train, x_test, y_train, y_test = generate_cc(params.get('n'), params.get('noise_sig'), params.get('train_set_fraction'))
         x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
     elif params['dset'] == 'bci_iv_1':
-        x_train, x_test, y_train, y_test = get_bci_iv_1(params.get('exp_num'), params)
+        x_train, x_test, y_train, y_test = get_bci_iv_1(params)
         x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
     else:
         raise ValueError('Dataset provided ({}) is invalid!'.format(params['dset']))
@@ -357,11 +395,19 @@ def get_mnist():
     x_test = np.expand_dims(x_test, -1) / 255
     return x_train, x_test, y_train, y_test
 
-def get_bci_iv_1(exp_num, params):
+def get_bci_iv_1(params):
     # ==== paths filenames ==== #
     dp = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../data/BCI_IV_1')
-    x_file = os.path.join(dp, 'BCICIV_calib_' + exp_num + '_cnt.txt')
-    y_file = os.path.join(dp, 'BCICIV_calib_' + exp_num + '_mrk.txt')
+    exp_files = [x for x in os.listdir(dp) if params['exp_num'] in x]
+    exp_files = [os.path.join(dp, x) for x in exp_files if params['mode'] in x]
+    x_file = [x for x in exp_files if 'cnt' in x][0]
+    if params['mode'] == 'calib':
+        y_file =  [x for x in exp_files if 'mrk' in x][0]
+    if params['mode'] == 'eval':
+        y_file = [x for x in exp_files if 'true_y' in x][0]
+
+    # x_file = os.path.join(dp, 'BCICIV_calib_' + params['exp_num'] + '_cnt.txt')
+    # y_file = os.path.join(dp, 'BCICIV_calib_' + params['exp_num'] + '_mrk.txt')
 
     # ==== loading in base format ==== #
 
@@ -370,26 +416,35 @@ def get_bci_iv_1(exp_num, params):
     with open(x_file, 'r') as f:
         x = np.asarray([[int(z) for z in y.split('\t')] for y in f.readlines()])
     with open(y_file, 'r') as f:
-        y = np.asarray([[int(float(z)) for z in x.split('\t')] for x in f.readlines()])
+        if params['mode'] == 'calib':
+            y = np.asarray([[int(float(z)) for z in x.split('\t')] for x in f.readlines()])
+            y_vec = vectorize_bci_labels(y, x.shape[0])
+        elif params['mode'] == 'eval':
+            y = np.asarray([[float(z) for z in x.split('\t')] for x in f.readlines()])
+            y = y[::10]  # take every 10th label
+            y_vec = y[:x.shape[0], 0]  # cut if there is 1 extra label - since y is not divided by 10
+            assert x.shape[0] == y_vec.shape[0]   #  IMPORTANT!
 
 
-    x = x[y[0,0]:]
+    # x = x[first_ind:]
     # for data integrity, splitting at the start of each visual cue session - it matters where we cut!
-    y_vec = vectorize_bci_labels(y, x.shape[0])
+
     # changing -1 in y array to 2, since algorithm demands classes to be natural numbers
     y_vec[y_vec == -1] = 2
+    # y_vec[np.argwhere(np.isnan(y_vec))] = params['nan']
 
-    slice_ind = y[int(len(y) * 0.8), 0]
+    # # since x is uint64, with numbers between -32000 to 16000 we normalize it (stability for siamese net issue?
+    x = (x - np.mean(x)) / np.max([np.abs(np.min(x)), np.abs(np.max(x))])
 
-    # since x is uint64, with numbers between -32000 to 16000 we normalize it (stability for siamese net issue?
-    x = x / np.max([np.abs(np.min(x)), np.abs(np.max(x))])
-
-    util.run_and_save_fft_examples(x, y_vec, params)
+    # util.run_and_save_fft_examples(x, y_vec, params)
 
     # PREPROCESSING X
     if params['preprocess']:
         x_processed = eeg_preprocess(x, params.get('preprocess'))
-
+    if params['mode'] == 'calib':
+        slice_ind = y[int(len(y) * 0.8), 0]
+    else:
+        slice_ind = int(len(y_vec) * 0.8)
     x_train, x_test = x_processed[:slice_ind], x_processed[slice_ind:]
     y_train, y_test = y_vec[:slice_ind], y_vec[slice_ind:x_processed.shape[0]]
 

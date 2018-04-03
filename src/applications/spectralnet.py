@@ -21,7 +21,10 @@ from keras.optimizers import RMSprop
 from core import train
 from core import costs
 from core.layer import stack_layers
-from core.util import get_scale, print_accuracy, get_cluster_sols, LearningHandler, make_layer_list, train_gen, get_y_preds, run_and_save_embedding
+from core.util import get_scale, print_accuracy, get_cluster_sols, LearningHandler, make_layer_list,\
+    train_gen, get_y_preds, run_and_save_embedding, replace_nan
+
+NAN = 999
 
 def run_net(data, params):
     #
@@ -37,6 +40,8 @@ def run_net(data, params):
 
     x = np.concatenate((x_train, x_val, x_test), axis=0)
     y = np.concatenate((y_train, y_val, y_test), axis=0)
+
+    y_train_labeled = replace_nan(y_train_labeled)
 
     if len(x_train_labeled):
         y_train_labeled_onehot = OneHotEncoder().fit_transform(y_train_labeled.reshape(-1, 1)).toarray()
@@ -142,9 +147,9 @@ def run_net(data, params):
     layers = make_layer_list(params['arch'], 'spectral', params.get('spec_reg'))
     layers += [
               {'type': 'tanh',
-               'size': 10, # params['n_clusters'],
+               'size': params['n_clusters'],
                'l2_reg': params.get('spec_reg'),
-               'name': 'spectral_{}'.format(len(params['arch']))},
+               'name': 'spectral_{}'.format(len(params['arch']['spectral']))},
               {'type': 'Orthonorm', 'name':'orthonorm'}
               ]
 
@@ -220,6 +225,10 @@ def run_net(data, params):
     # begin spectralnet training loop
     spec_lh.on_train_begin()
     weights_path = os.path.join(params['results_path'], 'spectral_net_weights.h5')
+    # ============================================================ #
+    # ================= Main Training loop ======================= #
+    # ============================================================ #
+    acc_array = []
     if not os.path.exists(weights_path) or params['retrain']:
         loss_list, val_loss_list = [], []
         for i in range(params['spec_ne']):
@@ -232,7 +241,7 @@ def run_net(data, params):
                     y_true=y_true,
                     batch_sizes=batch_sizes,
                     x_labeled=x_train_labeled,
-                    y_labeled=y_train_labeled_onehot,
+                    y_labeled=y_train_labeled_onehot[:,:3],
                     batches_per_epoch=100)[0]
 
             # get validation loss
@@ -242,7 +251,7 @@ def run_net(data, params):
                     inputs=inputs,
                     y_true=y_true,
                     x_labeled=x[0:0],
-                    y_labeled=y_train_labeled_onehot,
+                    y_labeled=y_train_labeled_onehot[:,:3],
                     batch_sizes=batch_sizes)
 
             # do early stopping if necessary
@@ -276,16 +285,20 @@ def run_net(data, params):
             loss_list.append(loss)
             val_loss_list.append(val_loss)
 
-            kmeans_assignments, km = get_cluster_sols(cur_x_spectralnet, ClusterClass=KMeans,
+            y_valid_ind = np.where(np.isnan(y) == False)[0]
+            y_valid = y[y_valid_ind]
+
+            kmeans_assignments, km = get_cluster_sols(cur_x_spectralnet[y_valid_ind,:], ClusterClass=KMeans,
                                                       n_clusters=params['n_clusters'], init_args={'n_init': 10})
-            y_spectralnet, _ = get_y_preds(kmeans_assignments, y, params['n_clusters'])
+
+            y_spectralnet, _ = get_y_preds(kmeans_assignments, y_valid, params['n_clusters'])
             # print_accuracy(kmeans_assignments, y, params['n_clusters'])
             from sklearn.metrics import normalized_mutual_info_score as nmi
-            nmi_score = nmi(kmeans_assignments, y)
-            print_accuracy(kmeans_assignments, y, params['n_clusters'], params, nmi_score)
+            nmi_score = nmi(kmeans_assignments, y_valid)
+            cur_acc, cur_nmi = print_accuracy(kmeans_assignments, y_valid, params['n_clusters'], params, nmi_score)
             print('NMI: ' + str(np.round(nmi_score, 3)))
-
-            # run_and_save_embedding(i, cur_x_spectralnet, y, params, loss_list, val_loss_list)
+            acc_array.append(cur_acc)
+            run_and_save_embedding(i, cur_x_spectralnet[y_valid_ind], y_valid, acc_array, params, loss_list, val_loss_list)
 
         spectral_net.save_weights(weights_path)
         print("finished training")
@@ -307,12 +320,12 @@ def run_net(data, params):
             batch_sizes=batch_sizes)
 
     # get accuracy and nmi
-    kmeans_assignments, km = get_cluster_sols(x_spectralnet, ClusterClass=KMeans, n_clusters=params['n_clusters'], init_args={'n_init':10})
-    y_spectralnet, _ = get_y_preds(kmeans_assignments, y, params['n_clusters'])
+    kmeans_assignments, km = get_cluster_sols(x_spectralnet[y_valid_ind], ClusterClass=KMeans, n_clusters=params['n_clusters'], init_args={'n_init':10})
+    y_spectralnet, _ = get_y_preds(kmeans_assignments, y_valid, params['n_clusters'])
     # print_accuracy(kmeans_assignments, y, params['n_clusters'])
     from sklearn.metrics import normalized_mutual_info_score as nmi
-    nmi_score = nmi(kmeans_assignments, y)
-    print_accuracy(kmeans_assignments, y, params['n_clusters'], params, nmi_score)
+    nmi_score = nmi(kmeans_assignments, y_valid)
+    _, _ = print_accuracy(kmeans_assignments, y_valid, params['n_clusters'], params, nmi_score)
     print('NMI: ' + str(np.round(nmi_score, 3)))
 
     if params.get('generalization_metrics'):
@@ -332,6 +345,7 @@ def run_net(data, params):
                 x_labeled=x_train_labeled[0:0],
                 y_labeled=y_train_labeled_onehot[0:0],
                 batch_sizes=batch_sizes)
+
         km_train = KMeans(n_clusters=params['n_clusters']).fit(x_spectralnet_train)
         from scipy.spatial.distance import cdist
         dist_mat = cdist(x_spectralnet_test, km_train.cluster_centers_)
