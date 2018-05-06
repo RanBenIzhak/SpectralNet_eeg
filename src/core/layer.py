@@ -7,7 +7,7 @@ import tensorflow as tf
 import numpy as np
 from keras.regularizers import l2
 
-def orthonorm_op(x, epsilon=5e-6):
+def orthonorm_op(x, epsilon=1e-5):
     '''
     Computes a matrix that orthogonalizes the input matrix x
 

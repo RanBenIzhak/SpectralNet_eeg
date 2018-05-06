@@ -18,7 +18,7 @@ from spectralnet import run_net
 # PARSE ARGUMENTS
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=str, help='gpu number to use', default='0')
-parser.add_argument('--dset', type=str, help='data set to use', default='cc')
+parser.add_argument('--dset', type=str, help='data set to use', default='mnist')
 args = parser.parse_args()
 
 # SELECT GPU
@@ -49,7 +49,7 @@ if args.dset == 'mnist':
         'siam_k': 2,                        # threshold where, for all k <= siam_k closest neighbors to x_i, (x_i, k) is considered
                                             # a 'positive' pair by siamese net
 
-        'siam_ne': 400,                     # number of training epochs for siamese net
+        'siam_ne': 50,                     # number of training epochs for siamese net
         'spec_ne': 400,                     # number of training epochs for spectral net
         'siam_lr': 1e-3,                    # initial learning rate for siamese net
         'spec_lr': 1e-3,                    # initial learning rate for spectral net

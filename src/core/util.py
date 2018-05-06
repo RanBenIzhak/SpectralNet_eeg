@@ -3,17 +3,14 @@ util.py: contains various utility functions used in the models
 '''
 
 from contextlib import contextmanager
-import os, sys
 from mpl_toolkits.mplot3d import Axes3D
+import os, sys
 
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.decomposition import PCA
-from sklearn.manifold import spectral_embedding
 import numpy as np
 from scipy.stats import norm
 import sklearn.metrics
-from scipy import stats
 
 from keras import backend as K
 from keras.callbacks import Callback
@@ -58,8 +55,6 @@ def make_layer_list(arch, network_type=None, reg=None, dropout=0):
     returns:        appropriately formatted stack_layers dictionary
     '''
     layers = []
-    if type(arch) == dict:
-        arch = arch[network_type]
     for i, a in enumerate(arch):
         layer = {'l2_reg': reg}
         layer.update(a)
@@ -136,9 +131,8 @@ class LearningHandler(Callback):
             stop_training = True
 
         # for keras
-        if hasattr(self, 'model'):
-            if hasattr(self.model, 'stop_trainning'):
-                self.model.stop_training = stop_training
+        if hasattr(self, 'model') and self.model is not None:
+            self.model.stop_training = stop_training
 
         return stop_training
 
@@ -216,6 +210,8 @@ def print_accuracy(cluster_assignments, y_true, n_clusters, params, nmi_score, e
     print('confusion matrix{}: '.format(extra_identifier))
     print(confusion_matrix)
     print('spectralNet{} accuracy: '.format(extra_identifier) + str(np.round(accuracy, 3)))
+    if not os.path.exists(params['results_path']):
+        os.makedirs(params['results_path'])
     with open(os.path.join(params['results_path'], 'NMI_acc_report.txt'), 'w') as f:
         print("spectralNet accuracy: {}".format(np.round(accuracy, 3)), file=f)
         print("spectralNet NMI: {}".format(str(np.round(nmi_score, 3))), file=f)
@@ -326,7 +322,7 @@ def run_and_save_embedding(epoch_num, embedded_data, labels, acc_array, params, 
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    colors = ['r', 'g', 'b']
+    colors = ['r', 'g', 'b', 'y', 'b']
     for i, label in enumerate(np.unique(labels)):
         cur_data = embedded_data[labels == label, :]
         # Randomly show 100 points from each label, else plot is too crowded
@@ -343,14 +339,20 @@ def run_and_save_embedding(epoch_num, embedded_data, labels, acc_array, params, 
     if mode == 'Spectral Net':
         plt.figure()
         plt.plot(range(len(loss)), loss)
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
         plt.savefig(os.path.join(fn, 'Loss.png'))
 
         plt.figure()
         plt.plot(range(len(val_loss)), val_loss)
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
         plt.savefig(os.path.join(fn, 'Validation loss.png'))
 
         plt.figure()
         plt.plot(range(len(acc_array)), acc_array)
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
         plt.savefig(os.path.join(fn, 'Accuracy.png'))
 
     plt.close('all')
@@ -416,11 +418,4 @@ def run_and_save_fft_examples(data, labels, params, window_size=256, overlap=0.5
     plt.close('all')
 
 
-
-def replace_nan(y):
-    nan_indices = np.argwhere(np.isnan(y))
-    valid_indices = np.argwhere(np.isnan(y) == False)
-    NaN_label = np.max(y[valid_indices]) + 1.0
-    y[nan_indices] = NaN_label
-    return y
 

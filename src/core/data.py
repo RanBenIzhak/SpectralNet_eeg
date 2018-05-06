@@ -4,37 +4,30 @@ data.py: contains all data generating code for datasets used in the script
 
 import os, sys
 import h5py
-import pickle
 
 import numpy as np
-import core.util as util
 from sklearn import preprocessing
-from scipy.signal import welch
 
 from keras import backend as K
 from keras.datasets import mnist
 from keras.models import model_from_json
-from core.takens_embed import get_delayed_manifold as takens
+
 from core import pairs
-
-
+from core.takens_embed import get_delayed_manifold as takens
 
 
 def get_data(params, data=None):
     '''
     Convenience function: preprocesses all data in the manner specified in params, and returns it
     as a nested dict with the following keys:
-
     the permutations (if any) used to shuffle the training and validation sets
     'p_train'                           - p_train
     'p_val'                             - p_val
-
     the data used for spectral net
     'spectral'
         'train_and_test'                - (x_train, y_train, x_val, y_val, x_test, y_test)
         'train_unlabeled_and_labeled'   - (x_train_unlabeled, y_train_unlabeled, x_train_labeled, y_train_labeled)
         'val_unlabeled_and_labeled'     - (x_val_unlabeled, y_val_unlabeled, x_val_labeled, y_val_labeled)
-
     the data used for siamese net, if the architecture uses the siamese net
     'siamese'
         'train_and_test'                - (pairs_train, dist_train, pairs_val, dist_val)
@@ -42,39 +35,6 @@ def get_data(params, data=None):
         'val_unlabeled_and_labeled'     - (pairs_val_unlabeled, dist_val_unlabeled, pairs_val_labeled, dist_val_labeled)
     '''
     ret = {}
-
-    # preprocessed data
-    data_path = os.path.join(os.path.dirname(sys.argv[0]), 'data', params['dset'] + '_preprocessed')
-    if not os.path.exists(data_path):
-        os.makedirs(data_path)
-    data_file = os.path.join(data_path,params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
-                             '_preprocessed.pickle')
-    data_file_spectral = os.path.join(data_path, params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
-                             '_spectral_preprocessed.pickle')
-    data_file_rest = os.path.join(data_path, params['mode'] + '_' + params['exp_num'] + '_' + params['preprocess'] +
-                                      '_rest_preprocessed.pickle')
-
-    # if already calculated preprocess - since it takes long
-    # if os.path.exists(data_file):
-    try:
-        with open(data_file, 'rb') as handle:
-            ret = pickle.load(handle)
-        print("Loaded pickle file")
-        return ret
-    except:
-        print("Did not load general pickle file")
-    try:
-        with open(data_file_spectral, 'rb') as handle:
-            ret_spectral = pickle.load(handle)
-        with open(data_file_rest, 'rb') as handle:
-            ret_rest = pickle.load(handle)
-        ret = ret_rest
-        ret['spectral'] = ret_spectral
-        return ret
-    except:
-        ("Failed loading splitted pickle files")
-
-
 
     # get data if not provided
     if data is None:
@@ -100,9 +60,11 @@ def get_data(params, data=None):
         raise ValueError("val_set_fraction is invalid! must be in range (0, 1]")
 
     # shuffle training and test data separately into themselves and concatenate
-    p = np.concatenate([np.random.permutation(len(x_train)), len(x_train) + np.random.permutation(len(x_test))], axis=0)
-
-    (x_train, y_train, p_train), (x_val, y_val, p_val) = split_data(x_train, y_train, train_val_split, permute=p[:len(x_train)])
+    if 'bci' in params['dset']:
+        (x_train, y_train, p_train), (x_val, y_val, p_val) = split_data(x_train, y_train, train_val_split)
+    else:
+        p = np.concatenate([np.random.permutation(len(x_train)), len(x_train) + np.random.permutation(len(x_test))], axis=0)
+        (x_train, y_train, p_train), (x_val, y_val, p_val) = split_data(x_train, y_train, train_val_split, permute=p[:len(x_train)])
 
     # further split each training and validation subset into its supervised and unsupervised sub-subsets
     if params.get('train_labeled_fraction'):
@@ -168,9 +130,7 @@ def get_data(params, data=None):
             precomputed_knn_path=train_path,
             use_approx=params.get('use_approx', False),
             pre_shuffled=True,
-            verbose=True
         )
-
         pairs_val_unlabeled, dist_val_unlabeled = pairs.create_pairs_from_unlabeled_data(
             x1=x_val_unlabeled,
             p=p_val_unlabeled,
@@ -186,6 +146,7 @@ def get_data(params, data=None):
         pairs_train_labeled, dist_train_labeled = pairs.create_pairs_from_labeled_data(x_train_labeled, class_indices)
         class_indices = [np.where(y_train_labeled == i)[0] for i in range(params['n_clusters'])]
         pairs_val_labeled, dist_val_labeled = pairs.create_pairs_from_labeled_data(x_train_labeled, class_indices)
+
         ret['siamese']['train_unlabeled_and_labeled'] = (pairs_train_unlabeled, dist_train_unlabeled, pairs_train_labeled, dist_train_labeled)
         ret['siamese']['val_unlabeled_and_labeled'] = (pairs_val_unlabeled, dist_val_unlabeled, pairs_val_labeled, dist_val_labeled)
 
@@ -194,27 +155,8 @@ def get_data(params, data=None):
         dist_train = np.concatenate((dist_train_unlabeled, dist_train_labeled), axis=0)
         pairs_val = np.concatenate((pairs_val_unlabeled, pairs_val_labeled), axis=0)
         dist_val = np.concatenate((dist_val_unlabeled, dist_val_labeled), axis=0)
-        ret['siamese']['train_and_test'] = (pairs_train, dist_train, pairs_val, dist_val)
 
-        try:
-            with open(data_file, 'wb') as handle:
-                pickle.dump(ret, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            print("finished saving data to pickle file \n")
-            return ret
-        except MemoryError:
-            os.remove(data_file)
-            print("Memory error - did not save training pairs for siamese network")
-            print("might result in long run-times if re-running program")
-        try:
-            with open(data_file_spectral, 'wb') as handle:
-                pickle.dump(ret['spectral'], handle, protocol=pickle.HIGHEST_PROTOCOL)
-            ret_rest = {x: ret[x] for x in ret if x not in ["spectral"]}
-            with open(data_file_rest, 'wb') as handle:
-                pickle.dump(ret_rest, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        except:
-            os.remove(data_file_spectral)
-            os.remove(data_file_rest)
-            print("failed saving any pickle")
+        ret['siamese']['train_and_test'] = (pairs_train, dist_train, pairs_val, dist_val)
 
     return ret
 
@@ -234,9 +176,6 @@ def load_data(params):
         x_train, x_test, y_train, y_test = get_mnist()
     elif params['dset'] == 'cc':
         x_train, x_test, y_train, y_test = generate_cc(params.get('n'), params.get('noise_sig'), params.get('train_set_fraction'))
-        x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
-    elif params['dset'] == 'bci_iv_1':
-        x_train, x_test, y_train, y_test = get_bci_iv_1(params)
         x_train, x_test = pre_process(x_train, x_test, params.get('standardize'))
     else:
         raise ValueError('Dataset provided ({}) is invalid!'.format(params['dset']))
@@ -301,13 +240,11 @@ def split_data(x, y, split, permute=None):
     Splits arrays x and y, of dimensionality n x d1 and n x d2, into
     k pairs of arrays (x1, y1), (x2, y2), ..., (xk, yk), where both
     arrays in the ith pair is of shape split[i-1]*n x (d1, d2)
-
     x, y:       two matrices of shape n x d1 and n x d2
     split:      a list of floats of length k (e.g. [a1, a2,..., ak])
                 where a, b > 0, a, b < 1, and a + b == 1
     permute:    a list or array of length n that can be used to
                 shuffle x and y identically before splitting it
-
     returns:    a tuple of tuples, where the outer tuple is of length k
                 and each of the k inner tuples are of length 3, of
                 the format (x_i, y_i, p_i) for the corresponding elements
@@ -395,79 +332,6 @@ def get_mnist():
     x_test = np.expand_dims(x_test, -1) / 255
     return x_train, x_test, y_train, y_test
 
-def get_bci_iv_1(params):
-    # ==== paths filenames ==== #
-    dp = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../data/BCI_IV_1')
-    exp_files = [x for x in os.listdir(dp) if params['exp_num'] in x]
-    exp_files = [os.path.join(dp, x) for x in exp_files if params['mode'] in x]
-    x_file = [x for x in exp_files if 'cnt' in x][0]
-    if params['mode'] == 'calib':
-        y_file =  [x for x in exp_files if 'mrk' in x][0]
-    if params['mode'] == 'eval':
-        y_file = [x for x in exp_files if 'true_y' in x][0]
-
-    # x_file = os.path.join(dp, 'BCICIV_calib_' + params['exp_num'] + '_cnt.txt')
-    # y_file = os.path.join(dp, 'BCICIV_calib_' + params['exp_num'] + '_mrk.txt')
-
-    # ==== loading in base format ==== #
-
-    if not os.path.exists(x_file):
-        raise()
-    with open(x_file, 'r') as f:
-        x = np.asarray([[int(z) for z in y.split('\t')] for y in f.readlines()])
-    with open(y_file, 'r') as f:
-        if params['mode'] == 'calib':
-            y = np.asarray([[int(float(z)) for z in x.split('\t')] for x in f.readlines()])
-            y_vec = vectorize_bci_labels(y, x.shape[0])
-        elif params['mode'] == 'eval':
-            y = np.asarray([[float(z) for z in x.split('\t')] for x in f.readlines()])
-            y = y[::10]  # take every 10th label
-            y_vec = y[:x.shape[0], 0]  # cut if there is 1 extra label - since y is not divided by 10
-            assert x.shape[0] == y_vec.shape[0]   #  IMPORTANT!
-
-
-    # x = x[first_ind:]
-    # for data integrity, splitting at the start of each visual cue session - it matters where we cut!
-
-    # changing -1 in y array to 2, since algorithm demands classes to be natural numbers
-    y_vec[y_vec == -1] = 2
-    # y_vec[np.argwhere(np.isnan(y_vec))] = params['nan']
-
-    # # since x is uint64, with numbers between -32000 to 16000 we normalize it (stability for siamese net issue?
-    x = (x - np.mean(x)) / np.max([np.abs(np.min(x)), np.abs(np.max(x))])
-
-    # util.run_and_save_fft_examples(x, y_vec, params)
-
-    # PREPROCESSING X
-    if params['preprocess']:
-        x_processed = eeg_preprocess(x, params.get('preprocess'))
-    if params['mode'] == 'calib':
-        slice_ind = y[int(len(y) * 0.8), 0]
-    else:
-        slice_ind = int(len(y_vec) * 0.8)
-    x_train, x_test = x_processed[:slice_ind], x_processed[slice_ind:]
-    y_train, y_test = y_vec[:slice_ind], y_vec[slice_ind:x_processed.shape[0]]
-
-    return x_train, x_test, y_train, y_test
-
-def vectorize_bci_labels(y, x_length):
-    '''
-    change indexed labels to [-1, 0, 1] labels in the original length of x
-    :param y:
-    :return:
-    '''
-    y_vec = []
-    for i in range(y.shape[0] - 1):
-        y_vec = np.concatenate((y_vec, np.multiply(np.ones(400), y[i, 1])))
-        y_vec = np.concatenate((y_vec, np.zeros(y[i+1, 0] - y[i, 0] - 400)))
-    # add last action task
-    y_vec = np.concatenate((y_vec, np.multiply(np.ones(400), y[-1, 1])))
-    # pad with 0's to X data length
-    y_vec = np.concatenate((y_vec, np.zeros(x_length - len(y_vec))))
-    return y_vec
-
-
-
 def pre_process(x_train, x_test, standardize):
     '''
     Convenience function: uses the sklearn StandardScaler on x_train
@@ -485,15 +349,125 @@ def pre_process(x_train, x_test, standardize):
             x_test = preprocessor.transform(x_test)
     return x_train, x_test
 
-
-
-def eeg_preprocess(data, method):
+def eeg_preprocess(data, method, metadata=None, params=None):
+    x_train, x_test, y_train, y_test = data
     if method == 'takens':
-        data_processed = takens(data, tau=10, ndelay=7)
+        tau, ndelay = params['tau'], params['ndelay']
+        data_processed = takens(x_train, tau=tau, ndelay=ndelay)
         data_processed = np.transpose(data_processed, (1, 0, 2))
-        data_processed = data_processed.reshape((data_processed.shape[0], -1))
+        train_data_processed = data_processed.reshape((data_processed.shape[0], -1))
+        data_processed = takens(x_test, tau=tau, ndelay=ndelay)
+        data_processed = np.transpose(data_processed, (1, 0, 2))
+        test_data_processed = data_processed.reshape((data_processed.shape[0], -1))
+        train_y_processed = y_train[tau * ndelay:]
+        test_y_processed = y_test[tau * ndelay:]
+        examples = []
+        return (train_data_processed, test_data_processed, train_y_processed, test_y_processed), examples
+
     if method =='welch':
-        f_sample_points, data_processed = welch(data, fs=100)
+        data_processed = []
+        labels_processed = []
+        examples = []
+        examples_counter = 0
+        # Need to split the data into chunks on which we will average. chose 4 seconds chunks
+        train_welch_x, train_welch_y = get_welch(x_train, y_train, params['tmi'])
+        test_welch_x, test_welch_y = get_welch(x_test, y_test, params['emi'])
+        # for i in range(500, x_train.shape[0] - 1000, 250):
+        #     cur_segment = x_train[i-500:i+500]
+        #     fsp, cur_welch = welch(cur_segment, fs=250, axis=0)
+        #     data_processed.append(cur_welch)
+        #     labels_processed.append(y_train[i])
 
-    return data_processed
+        return tuple([np.asarray(x) for x in [train_welch_x, test_welch_x, train_welch_y, test_welch_y]]),  examples
 
+    if method == 'welch_diffrential':
+
+        welch_array = []
+        psd_dif = []
+        labels_processed = []
+        examples = []
+        examples_counter = 0
+        cur_label_pos = 0  # for finding labels
+
+        # Calculating changes in Power Density function over time every 0.5 seconds, by averaging welch of the last 2 seconds every time.
+        fs = 250   # fs of the data
+        inner_time = 0.2  # [seconds]
+        inner_samp = int(inner_time * fs)  # check every X samples the difference in averages
+        welch_range = 250 * 4  # average over last 4 seconds
+        memory_length = 10  # compare to last 2 seconds  - 10 * inner_time
+        assert(data.shape[0] > 10000)
+        points = range(welch_range, data.shape[0])[::inner_samp]
+        for j, point in enumerate(points):
+            # finding the correct label of the sample at time "point"
+            while point > metadata[cur_label_pos][1]:  # update location of current label if needed
+                if cur_label_pos + 1 == len(metadata):
+                    break
+                cur_label_pos += 1
+            if cur_label_pos == len(metadata):
+                continue
+            # else - we take last known event as label of the last data points.
+            cur_label = metadata[cur_label_pos-1][0]
+
+            # cutting the current
+            cur_data = data[(point - welch_range):point]
+            fsp, cur_welch =welch(cur_data, fs=250, nperseg=250, axis=0)
+            cur_welch =  np.asarray(cur_welch)
+            welch_array.append(cur_welch)
+
+            if len(welch_array) < memory_length + 1:   # need to fill start buffer for compares
+                continue
+
+            # compute welch differences
+            cur_welch_diff = [cur_welch - x for x in welch_array[-5:-1]]
+
+            # append values
+            psd_dif.append(cur_welch_diff)
+            labels_processed.append(cur_label)
+
+            # saving examples
+            if j in [251, 478, 1032, 1065, 7651, 7971, 8521, 8983]:
+                examples.append((fsp, cur_welch_diff, cur_label))
+
+        psd_dif = np.asarray(psd_dif).reshape((len(psd_dif),-1)) # flattening the results for network
+        labels_processed = np.asarray(labels_processed)
+        # keep only samples with class label 1-4
+        valid_labels = [769, 770, 771, 772]
+        bool_arrays = [labels_processed == x for x in valid_labels]
+        args = np.nonzero(np.logical_or(np.logical_or(bool_arrays[0], bool_arrays[1]),
+                                        np.logical_or(bool_arrays[2], bool_arrays[3])))
+        labels_clean = labels_processed[args] - 769
+        psd_clean = psd_dif[args]
+
+        return psd_clean, labels_clean, examples
+
+    if method == None:
+        examples=[]
+        data_processed, labels_processed = [[], []], [[], []]
+        if params['tmi']:
+            for i in params['tmi']:
+                cur_segment = x_train[i - 500:i + 500]
+                data_processed[0].append(cur_segment)  # Note(!) we take only 20 first bins of the FFT (~0-20 Hz)
+                labels_processed[0].append(y_train[i])
+        if params['emi']:
+            for i in params['emi']:
+                cur_segment = x_test[i - 500:i + 500]
+                data_processed[1].append(cur_segment)  # Note(!) we take only 20 first bins of the FFT (~0-20 Hz)
+                labels_processed[1].append(y_test[i])
+        return tuple([np.asarray(x) for x in [data_processed[0], data_processed[1], labels_processed[0], labels_processed[1]]]),\
+               examples
+
+def get_welch(data, labels, valid_indices=None):
+    data_processed, labels_processed = [], []
+    if valid_indices:
+        for i in valid_indices:
+            cur_segment = data[i - 500:i + 500]
+            fsp, cur_welch = welch(cur_segment, nperseg=250, fs=250, axis=0)
+            data_processed.append(cur_welch[:20].flatten())  # Note(!) we take only 20 first bins of the FFT (~0-20 Hz)
+            labels_processed.append(labels[i])
+    else:
+        for i in range(500, data.shape[0] - 500, 250):
+            cur_segment = data[i - 500:i + 500]
+            fsp, cur_welch = welch(cur_segment, nperseg=250, fs=250, axis=0)
+            data_processed.append(cur_welch[:20].flatten())
+            labels_processed.append(labels[i])
+    return data_processed, labels_processed
