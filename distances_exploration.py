@@ -5,10 +5,13 @@ import numpy as np
 # add directories in src/ to path
 sys.path.insert(0, '/home/ran/PycharmProjects/SpectralNet_eeg/src/')
 
+from sklearn.decomposition import FastICA
+
 from core.data import get_data, pre_process
 from core.data_backup import eeg_preprocess
 from applications.spectralnet import run_net
 from core import statistics
+from mne.decoding import CSP
 
 MOTORIC_IMAGERY_ONLY=True
 
@@ -95,9 +98,12 @@ for exp in exp_list:
     # extract labels from metadata files
     train_y = np.zeros(train_x.shape[0])
     train_motoric_indices = []
+    tst_idx = 0
     for entry in train_metadata:
         if entry[0] in classes_events:
             train_y[entry[1] + 250:entry[1] + (250 * 4)] = event_to_class[entry[0]]   # according to experiment, this is the time where the motor imagery is happening
+            assert event_to_class[entry[0]] == train_GT_y[tst_idx]
+            tst_idx += 1
             train_motoric_indices.append(entry[1] + 250)
 
     eval_y = np.zeros(eval_x.shape[0])
@@ -105,7 +111,7 @@ for exp in exp_list:
     eval_motoric_indices = []
     for entry in eval_metadata:
         if entry[0] == 783:
-            eval_y[entry[1] + 250:entry[1] + (250 * 4)] = eval_GT_y[event_idx] - 1
+            eval_y[entry[1] + 250:entry[1] + (250 * 4)] = eval_GT_y[event_idx]
             eval_motoric_indices.append(entry[1] + 250)
             event_idx += 1
 
@@ -115,77 +121,93 @@ for exp in exp_list:
 
     # First Try - insert data as-is to the model. see if it gives anything other than non-sense
     new_dataset_data = (train_x / 1e3, eval_x / 1e3, train_y, eval_y) # returning to miliVolts
-    # statistics.distances(new_dataset_data, exp + '_unprocessed_data')
-    #
-    # # Siamese net maps everything to zeros
-    # # # Second Try
-    # # tmp = len(train_x)
-    # # new_dataset_data = (train_x[:int(tmp * 0.9)], train_x[int(tmp * 0.9):],
-    # #                     train_y[:int(tmp * 0.9)], train_y[int(tmp * 0.9):])
-    #
-    # # preprocess dataset
-    # preprocess_params = {'tau': 15,
-    #                      'ndelay': 7,
-    #                      'tmi': train_motoric_indices,
-    #                      'emi': eval_motoric_indices
-    #                      }
-    #
-    # # statistics.show_fft_examples(new_dataset_data, 250, train_motoric_indices[50:55])
-    # welch_preprocessed_data, examples = eeg_preprocess(new_dataset_data, 'welch', params=preprocess_params)
-    # statistics.distances(welch_preprocessed_data, exp + '_welch_mi_only')
-    #
-    #
-    # takens_delay = preprocess_params['tau'] * preprocess_params['ndelay']
-    #
-    # #  =========== Takens preprocessing ============== #
-    # takens_preprocessed_data, examples = eeg_preprocess(new_dataset_data, 'takens', params=preprocess_params)
-    #
-    # train_x_motoric = np.concatenate(tuple([takens_preprocessed_data[0][x-takens_delay:x + 750 - takens_delay] for x in train_motoric_indices]), axis=0)
-    # train_y_motoric = np.concatenate(tuple([takens_preprocessed_data[2][x-takens_delay:x + 750 - takens_delay] for x in train_motoric_indices]), axis=0)
-    # eval_x_motoric = np.concatenate(tuple([takens_preprocessed_data[1][x-takens_delay:x + 750 - takens_delay] for x in eval_motoric_indices]), axis=0)
-    # eval_y_motoric = np.concatenate(tuple([takens_preprocessed_data[3][x-takens_delay:x + 750 - takens_delay] for x in eval_motoric_indices]), axis=0)
-    # takens_mi_only = (train_x_motoric, eval_x_motoric, train_y_motoric, eval_y_motoric)
-    # statistics.distances(takens_mi_only, exp + '_takens_MI_only')
-    #
-    # # ======================================== #
-    #
-    # # =============== MI_only_no_preprocessing ============== #
-    # train_x_motoric = np.concatenate(tuple([new_dataset_data[0][x:x + 750] for x in train_motoric_indices]), axis=0)
-    # train_y_motoric = np.concatenate(tuple([new_dataset_data[2][x:x + 750] for x in train_motoric_indices]), axis=0)
-    # eval_x_motoric = np.concatenate(tuple([new_dataset_data[1][x:x + 750] for x in eval_motoric_indices]), axis=0)
-    # eval_y_motoric = np.concatenate(tuple([new_dataset_data[3][x:x + 750] for x in eval_motoric_indices]), axis=0)
-    # statistics.distances((train_x_motoric, eval_x_motoric, train_y_motoric, eval_y_motoric), exp + '_unprocessed_MI_only')
+
+    # csp = CSP(n_components=4, reg=None, log=True, norm_trace=False)
+
+
+    def unprocessed_and_takens(new_dataset_data):
+        statistics.distances(new_dataset_data, exp + '_unprocessed_data')
+
+        # Siamese net maps everything to zeros
+        # # Second Try
+        # tmp = len(train_x)
+        # new_dataset_data = (train_x[:int(tmp * 0.9)], train_x[int(tmp * 0.9):],
+        #                     train_y[:int(tmp * 0.9)], train_y[int(tmp * 0.9):])
+
+        # preprocess dataset
+        preprocess_params = {'tau': 15,
+                             'ndelay': 7,
+                             'tmi': train_motoric_indices,
+                             'emi': eval_motoric_indices
+                             }
+
+        # statistics.show_fft_examples(new_dataset_data, 250, train_motoric_indices[50:55])
+        welch_preprocessed_data, examples = eeg_preprocess(new_dataset_data, 'welch', params=preprocess_params)
+        statistics.distances(welch_preprocessed_data, exp + '_welch_mi_only')
+
+
+        takens_delay = preprocess_params['tau'] * preprocess_params['ndelay']
+
+        #  =========== Takens preprocessing ============== #
+        takens_preprocessed_data, examples = eeg_preprocess(new_dataset_data, 'takens', params=preprocess_params)
+
+        train_x_motoric = np.concatenate(tuple([takens_preprocessed_data[0][x-takens_delay:x + 750 - takens_delay] for x in train_motoric_indices]), axis=0)
+        train_y_motoric = np.concatenate(tuple([takens_preprocessed_data[2][x-takens_delay:x + 750 - takens_delay] for x in train_motoric_indices]), axis=0)
+        eval_x_motoric = np.concatenate(tuple([takens_preprocessed_data[1][x-takens_delay:x + 750 - takens_delay] for x in eval_motoric_indices]), axis=0)
+        eval_y_motoric = np.concatenate(tuple([takens_preprocessed_data[3][x-takens_delay:x + 750 - takens_delay] for x in eval_motoric_indices]), axis=0)
+        takens_mi_only = (train_x_motoric, eval_x_motoric, train_y_motoric, eval_y_motoric)
+        statistics.distances(takens_mi_only, exp + '_takens_MI_only')
+
+        # ======================================== #
+
+        # =============== MI_only_no_preprocessing ============== #
+        train_x_motoric = np.concatenate(tuple([new_dataset_data[0][x:x + 750] for x in train_motoric_indices]), axis=0)
+        train_y_motoric = np.concatenate(tuple([new_dataset_data[2][x:x + 750] for x in train_motoric_indices]), axis=0)
+        eval_x_motoric = np.concatenate(tuple([new_dataset_data[1][x:x + 750] for x in eval_motoric_indices]), axis=0)
+        eval_y_motoric = np.concatenate(tuple([new_dataset_data[3][x:x + 750] for x in eval_motoric_indices]), axis=0)
+        statistics.distances((train_x_motoric, eval_x_motoric, train_y_motoric, eval_y_motoric), exp + '_unprocessed_MI_only')
 
     # ========================= self Welch implemenetation for test ============= #
-    fft_train_x, fft_test_x = [], []
-    fft_train_y, fft_test_y = [], []
-    for x in range(0, new_dataset_data[0].shape[0], 250):
-        fft_samp = np.fft.fft(new_dataset_data[0][x:x+250])[:20].flatten()
-        fft_train_x.append(fft_samp)
-        fft_label = np.argmax(np.bincount(new_dataset_data[2][x:x+250].astype('int')))
-        fft_train_y.append(fft_label)
-    for x in range(0, new_dataset_data[1].shape[0], 250):
-        fft_samp = np.fft.fft(new_dataset_data[1][x:x+250])[:20].flatten()
-        fft_test_x.append(fft_samp)
-        fft_label = np.argmax(np.bincount(new_dataset_data[3][x:x+250].astype('int')))
-        fft_test_y.append(fft_label)
 
-    fft_data = [np.asarray(x[:-1]) for x in [fft_train_x, fft_test_x, fft_train_y, fft_test_y]]
-    # fft_train_x = np.asarray(fft_train_x[:-1])
-    # fft_train_y = np.asarray(fft_train_y[:-1])
-    fft_avg = [[], [], [], []]
-    # calculating mean over each 4 FFT windows (each 4 seconds)
-    for i, x in enumerate(fft_data[0]):
-        fft_avg[0].append(np.mean(fft_data[0][max(i-2, 0):min(fft_data[0].shape[0], i+2)], axis=0))
-        fft_avg[2].append(fft_data[2][i])
-    for i, x in enumerate(fft_data[1]):
-        fft_avg[1].append(np.mean(fft_data[1][max(i - 2, 0):min(fft_data[1].shape[0], i + 2)], axis=0))
-        fft_avg[3].append(fft_data[3][i])
+    def test_welch(new_dataset_data):
+        fft_train_x, fft_test_x = [], []
+        fft_train_y, fft_test_y = [], []
+        for x in range(0, new_dataset_data[0].shape[0], 250):
+            fft_samp = np.abs(np.fft.fft(new_dataset_data[0][x:x+250])[5:50].flatten())
+            fft_train_x.append(fft_samp)
+            fft_label = np.argmax(np.bincount(new_dataset_data[2][x:x+250].astype('int')))
+            fft_train_y.append(fft_label)
+        for x in range(0, new_dataset_data[1].shape[0], 250):
+            fft_samp = np.abs(np.fft.fft(new_dataset_data[1][x:x+250])[5:50].flatten())
+            fft_test_x.append(fft_samp)
+            fft_label = np.argmax(np.bincount(new_dataset_data[3][x:x+250].astype('int')))
+            fft_test_y.append(fft_label)
 
-    fft_avg_arr = [np.asarray(x) for x in fft_avg]
-    # fft_avg_arr[2] = np.squeeze(fft_avg_arr[2])
-    # fft_avg_arr[3] = np.squeeze(fft_avg_arr[3])
-    statistics.distances(fft_avg_arr, exp + '_mean_of_windows_fft')
+        fft_data = [np.asarray(x[:-1]) for x in [fft_train_x, fft_test_x, fft_train_y, fft_test_y]]
+        # fft_train_x = np.asarray(fft_train_x[:-1])
+        # fft_train_y = np.asarray(fft_train_y[:-1])
+        fft_avg = [[], [], [], []]
+        # calculating mean over each 4 FFT windows (each 4 seconds)
+        for i, x in enumerate(fft_data[0]):
+            fft_avg[0].append(np.mean(fft_data[0][max(i-2, 0):min(fft_data[0].shape[0], i+2)], axis=0))
+            fft_avg[2].append(fft_data[2][i])
+        for i, x in enumerate(fft_data[1]):
+            fft_avg[1].append(np.mean(fft_data[1][max(i - 2, 0):min(fft_data[1].shape[0], i + 2)], axis=0))
+            fft_avg[3].append(fft_data[3][i])
 
+        fft_avg_arr = [np.asarray(x) for x in fft_avg]
+        # fft_avg_arr[2] = np.squeeze(fft_avg_arr[2])
+        # fft_avg_arr[3] = np.squeeze(fft_avg_arr[3])
+        statistics.distances(fft_avg_arr, exp + '_mean_of_windows_fft')
+        return fft_avg_arr
+
+    def test_ICA(new_dataset_data):
+        ica = FastICA(n_components=22)
+        S_train = ica.fit_transform(new_dataset_data[0])
+        S_test = ica.fit_transform(new_dataset_data[1])
+        statistics.distances((S_train, S_test, new_dataset_data[2], new_dataset_data[3]), exp + '_ICA_decomp')
+
+    test_welch(new_dataset_data)
+    print("stop point")
 
 

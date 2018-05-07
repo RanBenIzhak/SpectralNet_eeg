@@ -34,17 +34,18 @@ def distances(data, name=None):
     :param data:
     :return:
     '''
+    n_points = 400
     classes = np.unique(data[2]).astype('int')
     class_indices = [np.random.permutation(np.argwhere(data[2] == x)) for x in classes]
     # select 100 / max number of points from each class
-    ppc = np.asarray([min(100, len(x)) for x in class_indices])
-    first_100 = [data[0][class_indices[x][:ppc[x]]] for x in range(len(class_indices))]
-    data_shape = first_100[0].shape
+    ppc = np.asarray([min(n_points, len(x)) for x in class_indices])
+    first_indices = [data[0][class_indices[x][:ppc[x]]] for x in range(len(class_indices))]
+    data_shape = first_indices[0].shape
     if len(data_shape) > 2:
-        first_100 = [first_100[x].reshape((data_shape[0], -1)) for x in range(len(class_indices))]
+        first_indices = [first_indices[x].reshape((first_indices[x].shape[0], -1)) for x in range(len(class_indices))]
 
     # calculate distances and nearest neighbours between all pairs of point in all 4 classes
-    concat_400_points = np.concatenate(first_100, axis=0)
+    concat_400_points = np.concatenate(first_indices, axis=0)
     n_points = concat_400_points.shape[0]
     result = np.empty((n_points, n_points))
     for i, point in enumerate(concat_400_points):
@@ -54,7 +55,8 @@ def distances(data, name=None):
 
     # Checking nearest neighbour for each point and statistics for each point
     nn_list = np.argsort(result, axis=1)[:, 1]
-    nn_class = nn_list // ppc[0]
+    ppc_cumsum = np.cumsum(ppc)
+    nn_class = [int(np.argwhere(ppc_cumsum > x)[0]) for x in nn_list]
     nn_count = [np.bincount(nn_class[x*ppc[x]:x*ppc[x]+ppc[x]]) for x in range(len(class_indices))]
 
     save_name = '/home/ran/PycharmProjects/SpectralNet_eeg/Results/Statistics/Bin_count_nn_100_' + name + '.png'

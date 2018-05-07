@@ -15,6 +15,13 @@ from keras.models import model_from_json
 from core import pairs
 from core.takens_embed import get_delayed_manifold as takens
 
+from mne import Epochs, pick_types, find_events
+from mne.channels import read_layout
+from mne.io import concatenate_raws, read_raw_edf
+from mne.datasets import eegbci
+from mne.decoding import CSP
+
+
 
 def get_data(params, data=None):
     '''
